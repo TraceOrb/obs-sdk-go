@@ -1,0 +1,6 @@
+# bin
+# test
+coverage.out
+*.exe
+*.test
+.DS_Store
