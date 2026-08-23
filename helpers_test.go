@@ -57,7 +57,7 @@ func (c *captureDoer) Do(req *http.Request) (*http.Response, error) {
 	}
 
 	if c.err != nil {
-		return nil, err
+		return nil, c.err
 	}
 
 	raw, err := io.ReadAll(req.Body)
