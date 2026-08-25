@@ -25,14 +25,20 @@ const (
 )
 
 var redactSensitiveKeys = map[string]struct{}{
-	"authorization": {},
-	"cookie":        {},
-	"set-cookie":    {},
-	"password":      {},
-	"token":         {},
-	"secret":        {},
-	"api_key":       {},
-	"apikey":        {},
+	"authorization":  {},
+	"cookie":         {},
+	"set-cookie":     {},
+	"password":       {},
+	"token":          {},
+	"secret":         {},
+	"api_key":        {},
+	"apikey":         {},
+	"accesstoken":    {},
+	"refreshtoken":   {},
+	"idtoken":        {},
+	"access_token":   {},
+	"refresh_token":  {},
+	"id_token":       {},
 }
 
 var DefaultRetryDelaysMs = []int{200, 800}

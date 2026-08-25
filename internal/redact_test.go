@@ -22,6 +22,27 @@ func TestRedactReplacesAuthorizationInHeaders(t *testing.T) {
 	}
 }
 
+func TestRedactAccessAndRefreshToken(t *testing.T) {
+	t.Parallel()
+
+	input := map[string]any{
+		"accessToken":  "live-jwt",
+		"refreshToken": "live-refresh",
+		"nested":       map[string]any{"access_token": "x", "ok": true},
+	}
+	out, _ := redactBody(input, nil).(map[string]any)
+	if out["accessToken"] != Redacted {
+		t.Fatalf("accessToken: %v", out["accessToken"])
+	}
+	if out["refreshToken"] != Redacted {
+		t.Fatalf("refreshToken: %v", out["refreshToken"])
+	}
+	nested, _ := out["nested"].(map[string]any)
+	if nested["access_token"] != Redacted {
+		t.Fatalf("nested access_token: %v", nested["access_token"])
+	}
+}
+
 func TestRedactReplacesNestedBodySecrets(t *testing.T) {
 	t.Parallel()
 
