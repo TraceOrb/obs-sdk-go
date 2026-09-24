@@ -22,6 +22,9 @@ type Options struct {
 	HTTP            HTTPDoer
 	OnDrop          OnDropFunc
 	RedactKeys      []string
+	SampleRate      *float64
+	Capture         Capture
+	Routes          map[string]RoutePolicy
 }
 
 type Client struct {
@@ -29,6 +32,7 @@ type Client struct {
 	env          string
 	maxBodyBytes int
 	redactKeys   []string
+	policy       ClientPolicy
 	batch        *internal.Batch
 }
 
@@ -47,6 +51,11 @@ func New(opts Options) (*Client, error) {
 
 	if opts.Env == "" {
 		return nil, errors.New("env is required")
+	}
+
+	policy, err := ParseClientPolicy(opts)
+	if err != nil {
+		return nil, err
 	}
 
 	maxQueue := opts.MaxQueue
@@ -103,6 +112,7 @@ func New(opts Options) (*Client, error) {
 		env:          opts.Env,
 		maxBodyBytes: maxBytes,
 		redactKeys:   internal.MergeRedactKeys([][]string{opts.RedactKeys}),
+		policy:       policy,
 		batch:        batch,
 	}, nil
 }
@@ -155,11 +165,21 @@ func (c *Client) Close() {
 	c.batch.Close()
 }
 
-func (c *Client) captureMeta() internal.CaptureMeta {
+func (c *Client) captureMeta(capture Capture) internal.CaptureMeta {
 	return internal.CaptureMeta{
 		Service:      c.service,
 		Env:          c.env,
 		MaxBodyBytes: c.maxBodyBytes,
 		RedactKeys:   c.redactKeys,
+		Capture: internal.FieldCapture{
+			Headers:      string(capture.Headers),
+			Query:        string(capture.Query),
+			RequestBody:  string(capture.RequestBody),
+			ResponseBody: string(capture.ResponseBody),
+		},
 	}
+}
+
+func (c *Client) policyForRoute(routePattern string) ResolvedRoutePolicy {
+	return PolicyForRoute(c.policy, routePattern)
 }

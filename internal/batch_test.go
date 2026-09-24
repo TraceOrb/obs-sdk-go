@@ -281,3 +281,129 @@ func TestDefaultFlushSizeNeverExceedsIngestBatchCap(t *testing.T) {
 		t.Fatal("large queue should cap at ingest batch")
 	}
 }
+
+func waitCalls(t *testing.T, doer *captureDoer, n int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		doer.mu.Lock()
+		got := doer.calls
+		doer.mu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("want %d calls", n)
+}
+
+func TestSecondBatchPostsWhileFirstInFlight(t *testing.T) {
+	t.Parallel()
+
+	gate := make(chan struct{})
+	doer := &captureDoer{handler: func(call int) (int, error) {
+		if call == 1 {
+			<-gate
+		}
+		return 202, nil
+	}}
+	batch := testBatch(doer, 8, 1, nil)
+	batch.Enqueue(makeRequest("/a"))
+	waitCalls(t, doer, 1)
+	batch.Enqueue(makeRequest("/b"))
+	waitCalls(t, doer, 2)
+	close(gate)
+	batch.Flush()
+}
+
+func TestEnqueueDoesNotSpawnUnboundedFlushWaiters(t *testing.T) {
+	t.Parallel()
+
+	gate := make(chan struct{})
+	doer := &captureDoer{handler: func(call int) (int, error) {
+		<-gate
+		return 202, nil
+	}}
+	batch := testBatch(doer, 8, 1, nil)
+	batch.Enqueue(makeRequest("/a"))
+	waitCalls(t, doer, 1)
+	batch.Enqueue(makeRequest("/b"))
+	waitCalls(t, doer, 2)
+	batch.Enqueue(makeRequest("/c"))
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		doer.mu.Lock()
+		got := doer.calls
+		doer.mu.Unlock()
+		if got > 2 {
+			t.Fatalf("got %d calls while inFlight capped at 2", got)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	doer.mu.Lock()
+	if doer.calls != 2 {
+		t.Fatalf("got %d calls, want 2", doer.calls)
+	}
+	doer.mu.Unlock()
+
+	close(gate)
+	batch.Flush()
+	waitCalls(t, doer, 3)
+}
+
+func TestFlushCompletesWhenOnDropPanics(t *testing.T) {
+	t.Parallel()
+
+	doer := &captureDoer{status: 401}
+	batch := testBatch(doer, 8, 100, func(DropReason) {
+		panic("onDrop boom")
+	})
+	batch.Enqueue(makeRequest("/x"))
+
+	done := make(chan struct{})
+	go func() {
+		defer func() { _ = recover() }()
+		batch.Flush()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Flush leaked waiter after onDrop panic")
+	}
+}
+
+func TestCloseDrainsInFlight(t *testing.T) {
+	t.Parallel()
+
+	gate := make(chan struct{})
+	doer := &captureDoer{handler: func(call int) (int, error) {
+		<-gate
+		return 202, nil
+	}}
+	batch := testBatch(doer, 8, 1, nil)
+	batch.Enqueue(makeRequest("/a"))
+	waitCalls(t, doer, 1)
+
+	done := make(chan struct{})
+	go func() {
+		batch.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("Close returned before in-flight Do finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(gate)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after Do completed")
+	}
+}

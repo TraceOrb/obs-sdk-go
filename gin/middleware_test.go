@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	traceorb "github.com/TraceOrb/obs-sdk-go"
 	"github.com/gin-gonic/gin"
@@ -43,6 +44,37 @@ func (c *captureDoer) Do(req *http.Request) (*http.Response, error) {
 		Body:       io.NopCloser(strings.NewReader("")),
 		Header:     make(http.Header),
 	}, nil
+}
+
+func waitBodies(t *testing.T, doer *captureDoer, n int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		doer.mu.Lock()
+		got := len(doer.bodies)
+		doer.mu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("want %d bodies", n)
+}
+
+func flushAndWaitBodies(t *testing.T, client *traceorb.Client, doer *captureDoer, n int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		client.Flush()
+		doer.mu.Lock()
+		got := len(doer.bodies)
+		doer.mu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("want %d bodies", n)
 }
 
 func testClient(t *testing.T, doer *captureDoer) *traceorb.Client {
@@ -87,13 +119,10 @@ func TestGinMiddlewareRedactsAuthorizationAndCapturesRoute(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	client.Flush()
+	flushAndWaitBodies(t, client, doer, 1)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got status %d", rec.Code)
-	}
-	if len(doer.bodies) != 1 {
-		t.Fatalf("got %d bodies", len(doer.bodies))
 	}
 
 	raw, _ := json.Marshal(doer.bodies[0])
@@ -131,7 +160,7 @@ func TestGinErrorHandlerRecordsWithoutChangingStatus(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/fail", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	client.Flush()
+	flushAndWaitBodies(t, client, doer, 1)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("got status %d", rec.Code)

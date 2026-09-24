@@ -33,32 +33,39 @@ func Middleware(client *traceorb.Client, opts Options) gin.HandlerFunc {
 			routePattern = c.Request.URL.RequestURI()
 		}
 
+		status := c.Writer.Status()
+		responseBody := writer.body
+		req := c.Request
+
 		traceorbOpts := traceorb.MiddlewareOptions{
-			RedactKeys: opts.RedactKeys,
+			RedactKeys: append([]string{}, opts.RedactKeys...),
 			ResolveRoutePattern: func(_ *http.Request) string {
 				return routePattern
 			},
 		}
 
 		if opts.ResolveTags != nil {
+			tags := opts.ResolveTags(c)
 			traceorbOpts.ResolveTags = func(_ *http.Request) map[string]string {
-				return opts.ResolveTags(c)
+				return tags
 			}
 		}
 
 		if opts.ResolveUserID != nil {
+			userID := opts.ResolveUserID(c)
 			traceorbOpts.ResolveUserID = func(_ *http.Request) string {
-				return opts.ResolveUserID(c)
+				return userID
 			}
 		}
 
 		if opts.ResolveRedactKeys != nil {
+			resolvedRedact := opts.ResolveRedactKeys(c)
 			traceorbOpts.ResolveRedactKeys = func(_ *http.Request) []string {
-				return opts.ResolveRedactKeys(c)
+				return resolvedRedact
 			}
 		}
 
-		client.ObserveHTTP(c.Request, c.Writer.Status(), writer.body, requestBody, traceorbOpts)
+		client.ObserveHTTP(req, status, responseBody, requestBody, traceorbOpts)
 	}
 }
 

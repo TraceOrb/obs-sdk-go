@@ -1,6 +1,7 @@
 package traceorb
 
 import (
+	"math/rand"
 	"net/http"
 
 	"github.com/TraceOrb/obs-sdk-go/internal"
@@ -29,22 +30,36 @@ func (c *Client) ObserveHTTP(r *http.Request, status int, responseBody any, requ
 		status = http.StatusOK
 	}
 
-	captured := internal.IngestFromRequest(
-		r,
-		status,
-		responseBody,
-		requestBody,
-		store,
-		c.captureMeta(),
-		internal.ObserveOptions{
-			ResolveTags:         opts.ResolveTags,
-			ResolveUserID:       opts.ResolveUserID,
-			ResolveRoutePattern: opts.ResolveRoutePattern,
-			RedactKeys:          opts.RedactKeys,
-			ResolveRedactKeys:   opts.ResolveRedactKeys,
-		},
-	)
-	c.Enqueue(captured)
+	observeOpts := internal.ObserveOptions{
+		ResolveTags:         opts.ResolveTags,
+		ResolveUserID:       opts.ResolveUserID,
+		ResolveRoutePattern: opts.ResolveRoutePattern,
+		RedactKeys:          opts.RedactKeys,
+		ResolveRedactKeys:   opts.ResolveRedactKeys,
+	}
+	routePattern := internal.ResolveRoutePattern(r, observeOpts)
+	resolved := c.policyForRoute(routePattern)
+
+	random := 0.0
+	if resolved.SampleRate > 0 && resolved.SampleRate < 1 {
+		random = rand.Float64()
+	}
+	if !ShouldSample(resolved.SampleRate, status, random) {
+		return
+	}
+
+	snap, respBody := internal.SnapshotFromRequest(r, status, responseBody, requestBody, observeOpts)
+	meta := c.captureMeta(resolved.Capture)
+	storeSnap := internal.PrepareIngestStore(store, respBody)
+
+	go func() {
+		defer func() {
+			_ = recover()
+		}()
+
+		captured := internal.IngestFromCapture(snap, storeSnap, meta)
+		c.Enqueue(captured)
+	}()
 }
 
 func RecordError(r *http.Request, err any) {

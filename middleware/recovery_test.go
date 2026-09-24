@@ -36,10 +36,7 @@ func TestRecoveryRecordsUnhandledErrorThenRepanics(t *testing.T) {
 			t.Fatal("expected re-panic")
 		}
 
-		client.Flush()
-		if len(doer.bodies) != 1 {
-			t.Fatalf("got %d bodies", len(doer.bodies))
-		}
+		flushAndWaitBodies(t, client, doer, 1)
 
 		request := doer.bodies[0].Requests[0]
 		if request.ErrorMessage != "timeout" {
@@ -72,7 +69,7 @@ func TestRecordErrorDoesNotOverwriteSetErrorMessage(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	client.Flush()
+	flushAndWaitBodies(t, client, doer, 1)
 
 	request := doer.bodies[0].Requests[0]
 	if request.ErrorMessage != "from-app" {

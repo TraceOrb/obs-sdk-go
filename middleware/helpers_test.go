@@ -8,9 +8,41 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	traceorb "github.com/TraceOrb/obs-sdk-go"
 )
+
+func waitBodies(t *testing.T, doer *captureDoer, n int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		doer.mu.Lock()
+		got := len(doer.bodies)
+		doer.mu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("want %d bodies", n)
+}
+
+func flushAndWaitBodies(t *testing.T, client *traceorb.Client, doer *captureDoer, n int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		client.Flush()
+		doer.mu.Lock()
+		got := len(doer.bodies)
+		doer.mu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("want %d bodies", n)
+}
 
 var errDown = errors.New("down")
 

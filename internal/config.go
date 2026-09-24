@@ -4,6 +4,7 @@ const (
 	Redacted              = "[redacted]"
 	MaxBodyBytes          = 32 * 1024
 	MaxIngestBatch        = 100
+	MaxInFlight           = 2
 	MaxEventsPerRequest   = 50
 	MaxTagsPerRequest     = 16
 	DefaultMaxQueue       = 1000
@@ -16,6 +17,7 @@ const (
 
 	maxBodyBytes          = MaxBodyBytes
 	maxIngestBatch        = MaxIngestBatch
+	maxInFlight           = MaxInFlight
 	maxEventsPerRequest   = MaxEventsPerRequest
 	maxTagsPerRequest     = MaxTagsPerRequest
 	defaultMaxQueue       = DefaultMaxQueue

@@ -20,7 +20,10 @@ func Middleware(client *traceorb.Client, opts Options) func(http.Handler) http.H
 			body := traceorb.ReadAndRestoreBody(r, client.MaxBodyBytes())
 			rec := newResponseRecorder(w, client.MaxBodyBytes())
 			defer func() {
-				client.ObserveHTTP(r, rec.status, rec.body, body, opts)
+				status := rec.status
+				responseBody := rec.body
+				requestBody := body
+				client.ObserveHTTP(r, status, responseBody, requestBody, opts)
 			}()
 			next.ServeHTTP(rec, r)
 		})

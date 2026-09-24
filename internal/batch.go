@@ -54,8 +54,9 @@ type Batch struct {
 	http          HTTPDoer
 	onDrop        OnDropFunc
 	mu            sync.Mutex
+	flushCond     *sync.Cond
 	queue         []IngestRequest
-	flushing      bool
+	inFlight      int
 	timerStop     chan struct{}
 	timerOnce     sync.Once
 	timerStarted  bool
@@ -100,6 +101,7 @@ func NewBatch(opts BatchOptions) *Batch {
 		queue:         make([]IngestRequest, 0, opts.MaxQueue),
 		timerStop:     make(chan struct{}),
 	}
+	batch.flushCond = sync.NewCond(&batch.mu)
 
 	return batch
 }
@@ -124,20 +126,19 @@ func (b *Batch) Size() int {
 
 func (b *Batch) Enqueue(request IngestRequest) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if len(b.queue) >= b.maxQueue {
 		b.queue = b.queue[1:]
 	}
 	b.queue = append(b.queue, request)
-	size := len(b.queue)
-	flushSize := b.flushSize
 	b.ensureTimerLocked()
-	b.mu.Unlock()
 
-	if size < flushSize {
+	if len(b.queue) < b.flushSize {
 		return
 	}
 
-	go b.Flush()
+	b.launchAvailableLocked()
 }
 
 func (b *Batch) ensureTimerLocked() {
@@ -169,25 +170,45 @@ func (b *Batch) loopTimer() {
 
 func (b *Batch) Flush() {
 	b.mu.Lock()
-	if b.flushing {
-		b.mu.Unlock()
+	for {
+		b.launchAvailableLocked()
+		if b.inFlight == 0 {
+			b.mu.Unlock()
+			return
+		}
+		b.flushCond.Wait()
+	}
+}
+
+func (b *Batch) launchAvailableLocked() {
+	for b.inFlight < maxInFlight && len(b.queue) > 0 {
+		b.launchLocked()
+	}
+}
+
+func (b *Batch) launchLocked() {
+	if b.inFlight >= maxInFlight {
 		return
 	}
 
 	batch := b.takeBatchLocked()
 	if len(batch) == 0 {
-		b.mu.Unlock()
 		return
 	}
 
-	b.flushing = true
-	b.mu.Unlock()
-
-	b.sendWithRetry(batch)
-
-	b.mu.Lock()
-	b.flushing = false
-	b.mu.Unlock()
+	b.inFlight++
+	go func(requests []IngestRequest) {
+		defer func() {
+			b.mu.Lock()
+			b.inFlight--
+			b.flushCond.Broadcast()
+			b.mu.Unlock()
+		}()
+		defer func() {
+			_ = recover()
+		}()
+		b.sendWithRetry(requests)
+	}(batch)
 }
 
 func (b *Batch) takeBatchLocked() []IngestRequest {
@@ -207,13 +228,13 @@ func (b *Batch) Close() {
 	started := b.timerStarted
 	b.mu.Unlock()
 
-	if !started {
-		return
+	if started {
+		b.timerOnce.Do(func() {
+			close(b.timerStop)
+		})
 	}
 
-	b.timerOnce.Do(func() {
-		close(b.timerStop)
-	})
+	b.Flush()
 }
 
 func (b *Batch) sendWithRetry(requests []IngestRequest) {

@@ -87,3 +87,21 @@ func TestNewRequiresIngestURLWriteKeyServiceEnv(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestNewRejectsSampleRateOutsideRange(t *testing.T) {
+	t.Parallel()
+
+	high := 1.5
+	_, err := New(Options{
+		IngestURL:       "http://obs.test/v1/ingest",
+		WriteKey:        "ok_write_test_secret",
+		Service:         "demo",
+		Env:             "test",
+		FlushIntervalMs: 0,
+		HTTP:            &captureDoer{status: 202},
+		SampleRate:      &high,
+	})
+	if err == nil {
+		t.Fatal("expected error for SampleRate 1.5")
+	}
+}

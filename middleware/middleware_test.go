@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	traceorb "github.com/TraceOrb/obs-sdk-go"
 )
@@ -30,7 +31,11 @@ func TestIngestDownStillServesTheRequest(t *testing.T) {
 		t.Fatalf("got status %d", rec.Code)
 	}
 
-	client.Flush()
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		client.Flush()
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func TestAuthorizationNeverAppearsInPostedJSON(t *testing.T) {
@@ -58,11 +63,7 @@ func TestAuthorizationNeverAppearsInPostedJSON(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	client.Flush()
-
-	if len(doer.bodies) != 1 {
-		t.Fatalf("got %d bodies", len(doer.bodies))
-	}
+	flushAndWaitBodies(t, client, doer, 1)
 
 	raw, err := json.Marshal(doer.bodies[0])
 	if err != nil {
@@ -134,7 +135,7 @@ func TestRedactKeysFromClientMiddlewareAndRequest(t *testing.T) {
 	req.Header.Set("X-Redact", "phone")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	client.Flush()
+	flushAndWaitBodies(t, client, doer, 1)
 
 	body := doer.bodies[0].Requests[0].RequestBodyJSON
 	if strings.Contains(body, "ada@example.com") {
@@ -172,7 +173,7 @@ func TestStepInsideBoundStoreIsIncludedInBatch(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/orders", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	client.Flush()
+	flushAndWaitBodies(t, client, doer, 1)
 
 	events := doer.bodies[0].Requests[0].Events
 	if len(events) != 1 || events[0].Name != "handler" || events[0].Seq != 0 || events[0].Level != traceorb.EventLevelInfo {
@@ -201,4 +202,47 @@ func TestResolverPanicIsSwallowed(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got status %d", rec.Code)
 	}
+}
+
+func TestSampleRateZeroDrops200Keeps500(t *testing.T) {
+	t.Parallel()
+
+	zero := 0.0
+	doer := &captureDoer{}
+	client, err := traceorb.New(traceorb.Options{
+		IngestURL:       "http://obs.test/v1/ingest",
+		WriteKey:        "ok_write_test_secret",
+		Service:         "demo",
+		Env:             "test",
+		FlushIntervalMs: 0,
+		HTTP:            doer,
+		OnDrop:          func(traceorb.DropReason) {},
+		SampleRate:      &zero,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	okHandler := Middleware(client, Options{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	reqOK := httptest.NewRequest(http.MethodGet, "/ok", nil)
+	recOK := httptest.NewRecorder()
+	okHandler.ServeHTTP(recOK, reqOK)
+	client.Flush()
+
+	if len(doer.bodies) != 0 {
+		t.Fatalf("expected no bodies for 200, got %d", len(doer.bodies))
+	}
+
+	errHandler := Middleware(client, Options{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":true}`))
+	}))
+	reqErr := httptest.NewRequest(http.MethodGet, "/fail", nil)
+	recErr := httptest.NewRecorder()
+	errHandler.ServeHTTP(recErr, reqErr)
+	flushAndWaitBodies(t, client, doer, 1)
 }

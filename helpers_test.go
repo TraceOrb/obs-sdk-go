@@ -7,7 +7,23 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 )
+
+func waitBodies(t *testing.T, doer *captureDoer, n int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		doer.mu.Lock()
+		got := len(doer.bodies)
+		doer.mu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("want %d bodies", n)
+}
 
 func testClient(t *testing.T, doer HTTPDoer) *Client {
 	t.Helper()

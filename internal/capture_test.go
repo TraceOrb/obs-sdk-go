@@ -32,7 +32,7 @@ func TestIngestRequestFromCaptureMapsHTTPAndStore(t *testing.T) {
 		userAgent:    "vitest",
 		extraTags:    map[string]string{"tenant": "acme"},
 		userID:       "u-1",
-	}, store, testMeta())
+	}, SnapshotStore(store), testMeta())
 
 	if request.RequestID != store.requestID {
 		t.Fatal("request id mismatch")
@@ -76,7 +76,7 @@ func TestIngestRequestOmitsEmptyOptionalFields(t *testing.T) {
 		routePattern: "/v1/orders",
 		statusCode:   201,
 		headers:      map[string]any{"Accept": "application/json"},
-	}, store, testMeta())
+	}, SnapshotStore(store), testMeta())
 
 	if request.IP != "" || request.UserAgent != "" || request.UserID != "" {
 		t.Fatal("expected omitted optional strings")
@@ -105,7 +105,7 @@ func TestIngestRequestCapsTags(t *testing.T) {
 		statusCode:   200,
 		headers:      map[string]any{},
 		extraTags:    extra,
-	}, store, testMeta())
+	}, SnapshotStore(store), testMeta())
 
 	if len(request.Tags) != maxTagsPerRequest {
 		t.Fatalf("got %d tags", len(request.Tags))
@@ -123,9 +123,35 @@ func TestFutureStartedAtYieldsZeroDuration(t *testing.T) {
 		routePattern: "/",
 		statusCode:   200,
 		headers:      map[string]any{},
-	}, store, testMeta())
+	}, SnapshotStore(store), testMeta())
 
 	if request.DurationMs != 0 {
 		t.Fatalf("got duration %d", request.DurationMs)
+	}
+}
+
+func TestIngestOmitsResponseBodyWhenCaptureErrorsAndStatus200(t *testing.T) {
+	t.Parallel()
+
+	store := NewStore()
+	store.responseBody = map[string]any{"ok": true}
+	meta := testMeta()
+	meta.Capture = FieldCapture{
+		Headers:      "always",
+		Query:        "always",
+		RequestBody:  "always",
+		ResponseBody: "errors",
+	}
+
+	request := IngestFromCapture(CapturedHTTP{
+		method:       "GET",
+		path:         "/",
+		routePattern: "/",
+		statusCode:   200,
+		headers:      map[string]any{"Accept": "application/json"},
+	}, SnapshotStore(store), meta)
+
+	if request.ResponseBodyJSON != "" {
+		t.Fatalf("expected omitted response body, got %q", request.ResponseBodyJSON)
 	}
 }

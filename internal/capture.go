@@ -17,7 +17,47 @@ type CapturedHTTP struct {
 	userID          string
 }
 
-func IngestFromCapture(http CapturedHTTP, store *Store, meta CaptureMeta) IngestRequest {
+// StoreSnapshot is a detached copy of Store fields used for ingest.
+// ObserveHTTP snapshots before the goroutine so Gin ErrorHandler (or other
+// post-Next writers) cannot race the async stringify/enqueue path.
+type StoreSnapshot struct {
+	requestID    string
+	startedAt    time.Time
+	events       []IngestEvent
+	tags         map[string]string
+	redactKeys   []string
+	errorMessage string
+	responseBody any
+}
+
+func SnapshotStore(store *Store) StoreSnapshot {
+	if store == nil {
+		return StoreSnapshot{}
+	}
+
+	events := make([]IngestEvent, len(store.events))
+	copy(events, store.events)
+
+	return StoreSnapshot{
+		requestID:    store.requestID,
+		startedAt:    store.startedAt,
+		events:       events,
+		tags:         copyStringMap(store.tags),
+		redactKeys:   append([]string{}, store.redactKeys...),
+		errorMessage: store.errorMessage,
+		responseBody: store.responseBody,
+	}
+}
+
+func PrepareIngestStore(store *Store, responseBody any) StoreSnapshot {
+	snap := SnapshotStore(store)
+	if responseBody != nil {
+		snap.responseBody = responseBody
+	}
+	return snap
+}
+
+func IngestFromCapture(http CapturedHTTP, store StoreSnapshot, meta CaptureMeta) IngestRequest {
 	finishedAt := time.Now().UTC()
 	durationMs := int(finishedAt.Sub(store.startedAt) / time.Millisecond)
 	if durationMs < 0 {
@@ -30,6 +70,7 @@ func IngestFromCapture(http CapturedHTTP, store *Store, meta CaptureMeta) Ingest
 		store.redactKeys,
 	})
 	maxBytes := meta.MaxBodyBytes
+	capture := resolveFieldCapture(meta.Capture)
 
 	request := IngestRequest{
 		RequestID:    store.requestID,
@@ -52,16 +93,52 @@ func IngestFromCapture(http CapturedHTTP, store *Store, meta CaptureMeta) Ingest
 	assignOptional(&request.IP, http.ip)
 	assignOptional(&request.UserAgent, http.userAgent)
 	assignOptional(&request.ErrorMessage, store.errorMessage)
-	assignOptional(&request.QueryJSON, toBodyJSON(http.query, maxBytes, extraKeys))
-	assignOptional(&request.RequestHeadersJSON, toHeadersJSON(http.headers, maxBytes, extraKeys))
-	assignOptional(&request.RequestBodyJSON, toBodyJSON(http.body, maxBytes, extraKeys))
-	assignOptional(&request.ResponseBodyJSON, toBodyJSON(store.responseBody, maxBytes, extraKeys))
+
+	if ShouldIncludeField(capture.Query, http.statusCode) {
+		assignOptional(&request.QueryJSON, toBodyJSON(http.query, maxBytes, extraKeys))
+	}
+	if ShouldIncludeField(capture.Headers, http.statusCode) {
+		assignOptional(&request.RequestHeadersJSON, toHeadersJSON(http.headers, maxBytes, extraKeys))
+	}
+	if ShouldIncludeField(capture.RequestBody, http.statusCode) {
+		assignOptional(&request.RequestBodyJSON, toBodyJSON(http.body, maxBytes, extraKeys))
+	}
+	if ShouldIncludeField(capture.ResponseBody, http.statusCode) {
+		assignOptional(&request.ResponseBodyJSON, toBodyJSON(store.responseBody, maxBytes, extraKeys))
+	}
 
 	if len(store.events) > 0 {
 		request.Events = store.events
 	}
 
 	return request
+}
+
+func resolveFieldCapture(capture FieldCapture) FieldCapture {
+	return FieldCapture{
+		Headers:      defaultCaptureMode(capture.Headers),
+		Query:        defaultCaptureMode(capture.Query),
+		RequestBody:  defaultCaptureMode(capture.RequestBody),
+		ResponseBody: defaultCaptureMode(capture.ResponseBody),
+	}
+}
+
+func defaultCaptureMode(mode string) string {
+	if mode == "" {
+		return "always"
+	}
+	return mode
+}
+
+func ShouldIncludeField(mode string, statusCode int) bool {
+	switch mode {
+	case "never":
+		return false
+	case "errors":
+		return statusCode >= 400
+	default:
+		return true
+	}
 }
 
 func assignOptional(target *string, value string) {

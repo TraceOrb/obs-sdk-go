@@ -14,6 +14,14 @@ type CaptureMeta struct {
 	Env          string
 	MaxBodyBytes int
 	RedactKeys   []string
+	Capture      FieldCapture
+}
+
+type FieldCapture struct {
+	Headers      string
+	Query        string
+	RequestBody  string
+	ResponseBody string
 }
 
 type ObserveOptions struct {
@@ -24,19 +32,32 @@ type ObserveOptions struct {
 	ResolveRedactKeys   func(r *http.Request) []string
 }
 
-func IngestFromRequest(
+func ResolveRoutePattern(r *http.Request, opts ObserveOptions) string {
+	path := r.URL.RequestURI()
+	if path == "" {
+		path = "/"
+	}
+
+	routePattern := path
+	if opts.ResolveRoutePattern != nil {
+		if resolved := opts.ResolveRoutePattern(r); resolved != "" {
+			routePattern = resolved
+		}
+	}
+	return routePattern
+}
+
+func SnapshotFromRequest(
 	r *http.Request,
 	status int,
 	responseBody any,
 	requestBody any,
-	store *Store,
-	meta CaptureMeta,
 	opts ObserveOptions,
-) IngestRequest {
+) (CapturedHTTP, any) {
 	extraTags := map[string]string{}
 	if opts.ResolveTags != nil {
 		if tags := opts.ResolveTags(r); tags != nil {
-			extraTags = tags
+			extraTags = copyStringMap(tags)
 		}
 	}
 
@@ -55,18 +76,9 @@ func IngestFromRequest(
 		path = "/"
 	}
 
-	routePattern := path
-	if opts.ResolveRoutePattern != nil {
-		if resolved := opts.ResolveRoutePattern(r); resolved != "" {
-			routePattern = resolved
-		}
-	}
+	routePattern := ResolveRoutePattern(r, opts)
 
-	if responseBody != nil {
-		SetResponseBody(store, responseBody)
-	}
-
-	return IngestFromCapture(CapturedHTTP{
+	return CapturedHTTP{
 		method:          r.Method,
 		path:            path,
 		routePattern:    routePattern,
@@ -79,7 +91,32 @@ func IngestFromRequest(
 		extraTags:       extraTags,
 		extraRedactKeys: MergeRedactKeys([][]string{opts.RedactKeys, resolvedRedact}),
 		userID:          userID,
-	}, store, meta)
+	}, responseBody
+}
+
+func IngestFromRequest(
+	r *http.Request,
+	status int,
+	responseBody any,
+	requestBody any,
+	store *Store,
+	meta CaptureMeta,
+	opts ObserveOptions,
+) IngestRequest {
+	captured, respBody := SnapshotFromRequest(r, status, responseBody, requestBody, opts)
+	return IngestFromCapture(captured, PrepareIngestStore(store, respBody), meta)
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func ReadAndRestoreBody(r *http.Request, max int) any {

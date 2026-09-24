@@ -111,6 +111,48 @@ func main() {
 
 Gin uses `FullPath()` as `routePattern` (`/v1/orders/:id`).
 
+## Sample and capture (optional)
+
+Omit `SampleRate` and `Capture` to keep today's defaults (100% of requests; headers, query, and both bodies always). Status 4xx/5xx always ingest. `Skip` skips the store entirely; `SampleRate` pointing at `0` still keeps errors. Use `*float64` for `SampleRate` — `nil` means 1.
+
+Sample 10% of successful traffic:
+
+```go
+rate := 0.1
+obs, err := traceorb.New(traceorb.Options{
+	IngestURL:  os.Getenv("OBS_INGEST_URL"),
+	WriteKey:   os.Getenv("OBS_WRITE_KEY"),
+	Service:    "orders-api",
+	Env:        "production",
+	SampleRate: &rate,
+})
+```
+
+Capture request and response bodies only on errors:
+
+```go
+obs, err := traceorb.New(traceorb.Options{
+	IngestURL: os.Getenv("OBS_INGEST_URL"),
+	WriteKey:  os.Getenv("OBS_WRITE_KEY"),
+	Service:   "orders-api",
+	Env:       "production",
+	Capture: traceorb.Capture{
+		RequestBody:  traceorb.CaptureErrors,
+		ResponseBody: traceorb.CaptureErrors,
+	},
+})
+```
+
+Skip health and metrics (no store, no ingest):
+
+```go
+handler := middleware.Middleware(obs, middleware.Options{
+	Skip: func(r *http.Request) bool {
+		return r.URL.Path == "/health" || r.URL.Path == "/metrics"
+	},
+})(mux)
+```
+
 ## Capture the request error (optional)
 
 The middleware does not record panics or handler errors by itself. Mount `Recovery` around your handler (inside `Middleware`) and/or call `RecordError` when you handle an error yourself. The 500 then gets `errorMessage` and an `unhandled.error` step. Skip this and 4xx/5xx still ingest.
